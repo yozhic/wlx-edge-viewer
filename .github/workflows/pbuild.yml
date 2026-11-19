@@ -1,0 +1,74 @@
+name: Private Build
+
+on:
+  push:
+    branches: [private-build]
+
+permissions:
+  contents: read
+
+jobs:
+  build-windows:
+    runs-on: windows-2022
+    env:
+      VCPKG_ROOT: ${{ github.workspace }}\..\vcpkg
+    steps:
+      # No "ref": on push to private-build this checks out exactly the
+      # pushed commit of private-build.
+      - uses: actions/checkout@v4
+
+      # A fresh full vcpkg clone: vcpkg.json pins a builtin-baseline commit,
+      # which the runner's preinstalled vcpkg may not contain.
+      - name: Set up vcpkg
+        shell: pwsh
+        run: |
+          git clone https://github.com/microsoft/vcpkg "$env:VCPKG_ROOT"
+          & "$env:VCPKG_ROOT\bootstrap-vcpkg.bat" -disableMetrics
+          & "$env:VCPKG_ROOT\vcpkg.exe" integrate install
+
+      # msvc-dev-cmd overwrites VCPKG_ROOT with the VS-bundled vcpkg, so the
+      # build steps set it again (same approach as release.yml).
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x86
+          vsversion: "2022"
+
+      # /t:EdgeViewer builds the plugin only, not EdgeViewer.Tests.
+      - name: Build x86 (Win32) release
+        shell: cmd
+        env:
+          VCPKG_ROOT: ${{ github.workspace }}\..\vcpkg
+        run: msbuild EdgeViewer.sln /t:EdgeViewer /p:Configuration=Release;Platform=Win32;UseEnv=true
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+          vsversion: "2022"
+
+      - name: Build x64 release
+        shell: cmd
+        env:
+          VCPKG_ROOT: ${{ github.workspace }}\..\vcpkg
+        run: msbuild EdgeViewer.sln /t:EdgeViewer /p:Configuration=Release;Platform=x64;UseEnv=true
+
+      - name: Package
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist\release | Out-Null
+          Copy-Item Resources\* dist\release -Recurse -Force
+          Remove-Item dist\release\edgeviewer.ini -ErrorAction SilentlyContinue
+          Copy-Item Resources\edgeviewer.ini dist\release\edgeviewer.ini.sample
+          Copy-Item winbuild\EdgeViewer_Win32_Release\EdgeViewer-Win32.dll dist\release\EdgeViewer.wlx
+          Copy-Item winbuild\EdgeViewer_x64_Release\EdgeViewer-x64.dll dist\release\EdgeViewer.wlx64
+
+      - name: Get current date and time
+        id: getdate
+        shell: bash
+        run: |
+          get_date=$(date +"%Y%m%d_%H%M")
+          echo "current_date_time=$get_date" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: EdgeViewer-windows-${{ steps.getdate.outputs.current_date_time }}
+          path: dist/release/
