@@ -15,6 +15,7 @@
     <link rel="stylesheet" href="http://assets.example/markdown/__ALERT_CSS__">
     <script src="http://assets.example/detect-charset.js"></script>
     <script src="http://assets.example/markdown/marked.umd.js"></script>
+    <script src="http://assets.example/markdown/marked-gfm-heading-id.umd.js"></script>
     <script src="http://assets.example/markdown/markdownExtension.js"></script>
     <script src="http://assets.example/highlight_js/highlight.min.js"></script>
     <script src="http://assets.example/mermaid/mermaid.min.js"></script>
@@ -42,6 +43,8 @@
             extensions: [markdownAlertExtension],
             renderer: customRenderer
           });
+          // GitHub-style heading ids (Unicode letters, unique ids)
+          marked.use(markedGfmHeadingId.gfmHeadingId());
 
           // remove YAML frontmatter (must start at the very beginning of the file)
           const htmlWithoutYaml = decoder.decode(t).replace(/^---\r?\n[\s\S]*?\n---\r?\n?/, '');

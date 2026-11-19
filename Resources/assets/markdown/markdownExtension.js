@@ -83,20 +83,7 @@ function escapeHtml(str){
   ];
   return entityList.reduce((s,{char, entity}) => s.replaceAll(char, entity),str);
 }
-function slugify(text) {
-  return text
-    .toLowerCase()
-    .trim()
-    .replace(/[^\w\s-]/g, '')
-    .replace(/[\s_-]+/g, '-')
-    .replace(/^-+|-+$/g, '');
-}
-
 const customRenderer = {
-  heading({ tokens, depth, raw }) {
-    const id = slugify(raw);
-    return `<h${depth} id="${id}">${this.parser.parseInline(tokens)}</h${depth}>\n`;
-  },
   code({ text, lang }) {
     const _lang = (lang || '').toLowerCase();
     if (_lang === 'mermaid') {
@@ -127,6 +114,15 @@ function _mdEvFetch(url) {
   });
 }
 
+// marked percent-encodes link URLs: [Введение](#введение) gives
+// href="#%D0%B2...", but the heading has id="введение". Footnote ids stay
+// encoded, so try the fragment as is first. A bad "%" sequence throws.
+function _mdFindAnchor(fragment) {
+  const el = document.getElementById(fragment);
+  if (el) return el;
+  try { return document.getElementById(decodeURIComponent(fragment)); } catch (e) { return null; }
+}
+
 function _mdNavigate(href) {
   const url = new URL(href, document.baseURI);
   _mdEvFetch(url.href).then(async t => {
@@ -141,7 +137,7 @@ function _mdNavigate(href) {
 
     const hash = url.hash;
     if (hash) {
-      const el = document.getElementById(hash.slice(1));
+      const el = _mdFindAnchor(hash.slice(1));
       if (el) el.scrollIntoView();
     }
 
@@ -201,8 +197,7 @@ document.addEventListener('click', (e) => {
 
   if (href.startsWith('#')) {
     e.preventDefault();
-    const id = href.slice(1);
-    const el = document.getElementById(id);
+    const el = _mdFindAnchor(href.slice(1));
     if (el) el.scrollIntoView();
     return;
   }
