@@ -95,25 +95,6 @@ const customRenderer = {
 
 const _mdNav = { stack: [], pos: -1 };
 
-// XHR-based fetch: Qt Web Engine's fetch() cannot reach custom schemes (the
-// fetch allowlist ignores registerScheme) but XMLHttpRequest works for ev://
-// on Linux and http://local.example on Windows (WebView2). Used for
-// in-viewer cross-file navigation.
-function _mdEvFetch(url) {
-  return new Promise(function (resolve, reject) {
-    const x = new XMLHttpRequest();
-    x.open('GET', url);
-    x.responseType = 'arraybuffer';
-    x.onload = function () {
-      if (x.status >= 200 && x.status < 300)
-        resolve(new Uint8Array(x.response ? x.response : []));
-      else reject(new Error('HTTP ' + x.status));
-    };
-    x.onerror = function () { reject(new Error('net error')); };
-    x.send();
-  });
-}
-
 // marked percent-encodes link URLs: [Введение](#введение) gives
 // href="#%D0%B2...", but the heading has id="введение". Footnote ids stay
 // encoded, so try the fragment as is first. A bad "%" sequence throws.
@@ -123,11 +104,19 @@ function _mdFindAnchor(fragment) {
   try { return document.getElementById(decodeURIComponent(fragment)); } catch (e) { return null; }
 }
 
+// The latest click wins: an older, slower load is dropped.
+let _mdNavSeq = 0;
+
+// Resolves true when the page is shown; on failure the page stays as is.
 function _mdNavigate(href) {
   const url = new URL(href, document.baseURI);
-  _mdEvFetch(url.href).then(async t => {
+  const seq = ++_mdNavSeq;
+  return evFetch(url.href).then(async t => {
+    if (seq !== _mdNavSeq) return false;
     const decoder = new TextDecoder(detect_charset(t));
     const html = marked.parse(decoder.decode(t).replace(/^---\r?\n[\s\S]*?\n---\r?\n?/, ''));
+    // Relative links and images resolve against the new page's folder.
+    document.querySelector('base').href = new URL('.', url).href;
     document.getElementById('content').innerHTML = html;
     window.scrollTo(0, 0);
 
@@ -141,8 +130,12 @@ function _mdNavigate(href) {
       if (el) el.scrollIntoView();
     }
 
-    _mdUpdateButtons();
-  }).catch(() => {});
+    return true;
+  }).catch(err => {
+    console.warn('Markdown navigation failed:', url.href, err);
+    if (seq === _mdNavSeq) evShowError(url);
+    return false;
+  });
 }
 
 function _mdPushNav(href) {
@@ -152,16 +145,15 @@ function _mdPushNav(href) {
   _mdUpdateButtons();
 }
 
-function _mdGoBack() {
-  if (_mdNav.pos <= 0) return;
-  _mdNav.pos--;
-  _mdNavigate(_mdNav.stack[_mdNav.pos]);
-}
-
-function _mdGoForward() {
-  if (_mdNav.pos >= _mdNav.stack.length - 1) return;
-  _mdNav.pos++;
-  _mdNavigate(_mdNav.stack[_mdNav.pos]);
+// Move in the history only after the page is shown.
+function _mdGo(step) {
+  const pos = _mdNav.pos + step;
+  if (pos < 0 || pos >= _mdNav.stack.length) return;
+  _mdNavigate(_mdNav.stack[pos]).then(ok => {
+    if (!ok) return;
+    _mdNav.pos = pos;
+    _mdUpdateButtons();
+  });
 }
 
 function _mdUpdateButtons() {
@@ -182,13 +174,14 @@ document.addEventListener('DOMContentLoaded', function() {
   const bar = document.createElement('div');
   bar.id = 'md-nav-bar';
   bar.style.cssText = 'position:fixed;top:0;right:0;z-index:9999;display:flex;gap:4px;padding:6px 8px;font-family:sans-serif;user-select:none;';
-  bar.innerHTML = '<button id="md-nav-back" onclick="_mdGoBack()" style="width:28px;height:28px;border:none;border-radius:4px;background:rgba(128,128,128,0.15);cursor:pointer;font-size:16px;opacity:0.3" title="Back">\u2190</button>' +
-    '<button id="md-nav-fwd" onclick="_mdGoForward()" style="width:28px;height:28px;border:none;border-radius:4px;background:rgba(128,128,128,0.15);cursor:pointer;font-size:16px;opacity:0.3" title="Forward">\u2192</button>' +
+  bar.innerHTML = '<button id="md-nav-back" onclick="_mdGo(-1)" style="width:28px;height:28px;border:none;border-radius:4px;background:rgba(128,128,128,0.15);cursor:pointer;font-size:16px;opacity:0.3" title="Back">\u2190</button>' +
+    '<button id="md-nav-fwd" onclick="_mdGo(1)" style="width:28px;height:28px;border:none;border-radius:4px;background:rgba(128,128,128,0.15);cursor:pointer;font-size:16px;opacity:0.3" title="Forward">\u2192</button>' +
     '<span id="md-nav-info" style="line-height:28px;font-size:11px;color:#888;padding:0 4px"></span>';
   document.body.appendChild(bar);
 });
 
 document.addEventListener('click', (e) => {
+  evHideError();
   const link = e.target.closest('a');
   if (!link) return;
 
@@ -202,14 +195,14 @@ document.addEventListener('click', (e) => {
     return;
   }
 
+  // History changes only after the page is shown.
   if (/\.md(#.*)?$/i.test(href)) {
     const url = new URL(href, document.baseURI);
-    const curDir = new URL(document.baseURI).pathname.replace(/\/[^/]*$/, '/');
-    const linkDir = url.pathname.replace(/\/[^/]*$/, '/');
-    if (curDir === linkDir) {
+    if (evIsInViewerLink(url)) {
       e.preventDefault();
-      if (window.__MD_NAVIGATION__) _mdPushNav(url.href);
-      _mdNavigate(url.href);
+      _mdNavigate(url.href).then(ok => {
+        if (ok && window.__MD_NAVIGATION__) _mdPushNav(url.href);
+      });
     }
   }
 });
