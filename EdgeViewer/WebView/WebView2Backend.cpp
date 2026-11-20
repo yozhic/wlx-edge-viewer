@@ -91,6 +91,15 @@ bool UrlDecodeInto(std::wstring& out, const std::wstring& in)
 		bytes.data(), static_cast<int>(bytes.size()), out.data(), wlen);
 	return true;
 }
+
+bool ReadFileBytes(const std::filesystem::path& path, std::vector<uint8_t>& out)
+{
+	std::ifstream f(path, std::ios::binary);
+	if (!f)
+		return false;
+	out.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+	return true;
+}
 }
 //------------------------------------------------------------------------
 WebView2Backend::WebView2Backend(wil::com_ptr<ICoreWebView2Controller> controller,
@@ -239,19 +248,11 @@ void WebView2Backend::InstallForcedHtmlSchemeHandler()
 		&m_forcedHtmlToken);
 }
 
-// Map an evh://<host>/<escapedRel> URI to <folder>/<rel>, read the file, and
-// build a WebResourceResponse whose Content-Type is text/html for .xml/.xhtml
-// (so forced documents render as HTML). Returns false if the host is unmapped
-// or the file is unreadable.
-bool WebView2Backend::BuildForcedHtmlResponse(
-	const wchar_t* uri,
-	ICoreWebView2Environment* environment,
-	ICoreWebView2WebResourceResponse** outResponse)
+// Map an evh://<host>/<escapedRel> URI to the file <folder>/<rel>. False if
+// the host is unmapped, the path is malformed or outside the folder.
+bool WebView2Backend::ResolveEvhUri(const std::wstring& full, std::filesystem::path& outFile)
 {
-	*outResponse = nullptr;
-
 	// Strip the scheme+authority: "evh://<host>/<path>".
-	const std::wstring full = uri;
 	const size_t p = full.find(L"//");
 	if (p == std::wstring::npos)
 		return false;
@@ -278,18 +279,39 @@ bool WebView2Backend::BuildForcedHtmlResponse(
 	if (!UrlDecodeInto(rel, escapedPath))
 		return false;
 
-	// Basic containment: the decoded relative path must not escape the folder.
-	const std::wstring foldLower = [&] { std::wstring s = folder.wstring(); for (auto& c : s) c = static_cast<wchar_t>(std::towlower(c)); return s; }();
-	const std::filesystem::path filePath = folder / rel;
-	const std::wstring fileLower = [&] { std::wstring s = filePath.wstring(); for (auto& c : s) c = static_cast<wchar_t>(std::towlower(c)); return s; }();
-	if (foldLower.empty() || fileLower.rfind(foldLower, 0) != 0)
+	// The normalized path ("..", "/" -> "\\") must stay inside the folder.
+	const auto lower = [](std::wstring s) { for (auto& c : s) c = static_cast<wchar_t>(std::towlower(c)); return s; };
+	const std::wstring foldLower = lower(folder.lexically_normal().wstring());
+	const std::filesystem::path filePath = (folder / rel).lexically_normal();
+	const std::wstring fileLower = lower(filePath.wstring());
+	if (foldLower.empty() || fileLower.size() <= foldLower.size() || fileLower.rfind(foldLower, 0) != 0)
+		return false;
+	if (foldLower.back() != L'\\' && fileLower[foldLower.size()] != L'\\')
 		return false;
 
-	// Read the file into memory and wrap it in a stream for the response.
-	std::ifstream f(filePath, std::ios::binary);
-	if (!f)
+	outFile = filePath;
+	return true;
+}
+
+bool WebView2Backend::ReadEvhFile(const std::wstring& uri, std::vector<uint8_t>& outBytes)
+{
+	std::filesystem::path filePath;
+	return ResolveEvhUri(uri, filePath) && ReadFileBytes(filePath, outBytes);
+}
+
+// Serve an evh:// URI. Content-Type is text/html for .xml/.xhtml (so forced
+// documents render as HTML). False if the file cannot be resolved or read.
+bool WebView2Backend::BuildForcedHtmlResponse(
+	const wchar_t* uri,
+	ICoreWebView2Environment* environment,
+	ICoreWebView2WebResourceResponse** outResponse)
+{
+	*outResponse = nullptr;
+
+	std::filesystem::path filePath;
+	std::vector<uint8_t> bytes;
+	if (!ResolveEvhUri(uri, filePath) || !ReadFileBytes(filePath, bytes))
 		return false;
-	std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
 
 	wil::com_ptr<IStream> stream;
 	CreateStreamOnHGlobal(nullptr, TRUE, &stream);

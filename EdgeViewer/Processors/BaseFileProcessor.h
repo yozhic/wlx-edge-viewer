@@ -58,7 +58,8 @@ protected:
 	// FitToScreen key.
 	virtual std::vector<WStrPair> extraPlaceholders() const { return {}; }
 
-private:
+public:
+	// Also used by CMD_READ (WebViewFactory.cpp).
 	static std::wstring Base64Encode(const std::vector<uint8_t>& bytes);
 };
 //------------------------------------------------------------------------
