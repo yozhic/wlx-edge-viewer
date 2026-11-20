@@ -7,6 +7,7 @@
 #include "EncodingList.h"
 #include "UrlLauncher.h"
 #include "Processors/ProcessorInterface.h"
+#include "Processors/BaseFileProcessor.h"
 
 #include <windows.h>
 #include <webview2.h>
@@ -330,6 +331,7 @@ void AddAccleratorKeyHandler(ICoreWebView2Controller* controller, HWND hWnd)
 }
 
 void HandleSaveAttachment(ICoreWebView2* webview, HWND hWnd, const std::vector<std::wstring>& tokens);
+void HandleHostRead(ICoreWebView2* webview, HWND hWnd, const std::vector<std::wstring>& tokens);
 
 void ForwardTabToParent(HWND hWnd)
 {
@@ -394,6 +396,8 @@ void ParseAndPostMessage(ICoreWebView2Controller* controller, ICoreWebView2* web
 			controller->put_ZoomFactor(std::stod(tokens[1]));
 		else if (tokens[0] == L"CMD_SAVE")
 			HandleSaveAttachment(webview, hWnd, tokens);
+		else if (tokens[0] == L"CMD_READ")
+			HandleHostRead(webview, hWnd, tokens);
 		else if (tokens[0] == L"CMD_AUTO_ENCODING")
 		{
 			// Provisional HTML charset auto-detection: the page suggests a
@@ -472,6 +476,26 @@ void HandleSaveAttachment(ICoreWebView2* webview, HWND hWnd, const std::vector<s
 		reply(L"ok", L"Saved to " + target);
 	else
 		reply(L"error", L"Could not write the attachment to the chosen folder.");
+}
+
+//------------------------------------------------------------------------
+// CMD_READ|<id>|<evh url>: read a linked file for the md/rst loaders. The page
+// has origin "null", so its XHR to evh:// (files on a network share) fails.
+// Answer: {"evRead":"<id>","ok":true|false,"data":"<base64>"}.
+void HandleHostRead(ICoreWebView2* webview, HWND hWnd, const std::vector<std::wstring>& tokens)
+{
+	if (tokens.size() < 3)
+		return;
+
+	std::vector<uint8_t> bytes;
+	bool ok = false;
+	if (auto it = gs_Views.find(static_cast<void*>(hWnd)); it != gs_Views.end())
+		if (auto* wv2 = dynamic_cast<WebView2Backend*>(it->second.get()))
+			ok = wv2->ReadEvhFile(tokens[2], bytes);
+
+	const std::wstring json = std::format(L"{{\"evRead\":\"{}\",\"ok\":{},\"data\":\"{}\"}}",
+		tokens[1], ok ? L"true" : L"false", ok ? BaseFileProcessor::Base64Encode(bytes) : L"");
+	webview->PostWebMessageAsJson(json.c_str());
 }
 
 // Configure the WebView2 environment + controller for `hWnd`. The

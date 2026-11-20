@@ -10,11 +10,20 @@
       th[align="left"],   td[align="left"]   { text-align: left; }
       th[align="center"], td[align="center"] { text-align: center; }
       th[align="right"],  td[align="right"]  { text-align: right; }
+      /* Footnotes: marked-footnote gives the "Footnotes" heading the class
+         sr-only (as on GitHub). Hide it visually, keep it for screen readers. */
+      .sr-only {
+        position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+        overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+      }
     </style>
     <link rel="stylesheet" href="http://assets.example/highlight_js/__HLJS_CSS__">
     <link rel="stylesheet" href="http://assets.example/markdown/__ALERT_CSS__">
     <script src="http://assets.example/detect-charset.js"></script>
     <script src="http://assets.example/markdown/marked.umd.js"></script>
+    <script src="http://assets.example/markdown/marked-gfm-heading-id.umd.js"></script>
+    <script src="http://assets.example/markdown/marked-footnote.umd.js"></script>
+    <script src="http://assets.example/navigation.js"></script>
     <script src="http://assets.example/markdown/markdownExtension.js"></script>
     <script src="http://assets.example/highlight_js/highlight.min.js"></script>
     <script src="http://assets.example/mermaid/mermaid.min.js"></script>
@@ -24,6 +33,7 @@
     <div id="content"></div>
     
     <script>window.__MD_NAVIGATION__ = __MD_NAV_FLAG__; window.__IS_DARK__ = __IS_DARK__;</script>
+    <script src="http://assets.example/markdown/codeCopy.js"></script>
     <script>
       // The plugin pre-fetches the file and base64-encodes it. The
       // inlined value is a base64 string literal (RFC 4648 charset is
@@ -42,6 +52,11 @@
             extensions: [markdownAlertExtension],
             renderer: customRenderer
           });
+          // GitHub-style heading ids (Unicode letters, unique ids)
+          marked.use(markedGfmHeadingId.gfmHeadingId());
+
+          // Footnotes [^1]. marked.use() is global, so _mdNavigate() gets them too.
+          if (typeof markedFootnote === 'function') marked.use(markedFootnote());
 
           // remove YAML frontmatter (must start at the very beginning of the file)
           const htmlWithoutYaml = decoder.decode(t).replace(/^---\r?\n[\s\S]*?\n---\r?\n?/, '');

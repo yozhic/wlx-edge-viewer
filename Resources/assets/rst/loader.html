@@ -6,6 +6,7 @@
     <link rel="stylesheet" href="http://assets.example/highlight_js/__HLJS_CSS__">
     <link rel="stylesheet" href="http://assets.example/katex/katex.min.css">
     <script src="http://assets.example/detect-charset.js"></script>
+    <script src="http://assets.example/navigation.js"></script>
     <script src="http://assets.example/rst/rst-compiler.bundle.min.js"></script>
     <script src="http://assets.example/highlight_js/highlight.min.js"></script>
   </head>
@@ -22,26 +23,6 @@
       const getBytes = fileContent
         ? Promise.resolve(Uint8Array.from(atob(fileContent), c => c.charCodeAt(0)))
         : evFetch("http://local.example/__RST_FILENAME__");
-
-      // evFetch: XHR-based fetch. Qt Web Engine's fetch() API cannot reach
-      // custom schemes (Chromium's fetch allowlist ignores registerScheme, so
-      // the scheme handler is never invoked), while XMLHttpRequest works for
-      // ev:// on Linux and http://local.example on Windows (WebView2
-      // WebResourceRequested). Used for in-viewer cross-file navigation.
-      function evFetch(url) {
-        return new Promise(function (resolve, reject) {
-          const x = new XMLHttpRequest();
-          x.open('GET', url);
-          x.responseType = 'arraybuffer';
-          x.onload = function () {
-            if (x.status >= 200 && x.status < 300)
-              resolve(new Uint8Array(x.response ? x.response : []));
-            else reject(new Error('HTTP ' + x.status));
-          };
-          x.onerror = function () { reject(new Error('net error')); };
-          x.send();
-        });
-      }
 
       // Strip top-level directives that rst-compiler throws on and that carry
       // no visible body (sectnum auto-numbering, title). ``.. contents::``
@@ -105,16 +86,23 @@
         });
       }
 
-      // Build a URL-relative path pattern that matches same-directory .rst links.
       const currentFileName = "__RST_FILENAME__".split('/').pop();
 
+      // The latest click wins: an older, slower load is dropped.
+      let rstNavSeq = 0;
+
+      // Resolves true when the page is shown; on failure the page stays as is.
       function rstNavigate(href) {
         const url = new URL(href, document.baseURI);
-        evFetch(url.href).then(t => {
+        const seq = ++rstNavSeq;
+        return evFetch(url.href).then(t => {
+          if (seq !== rstNavSeq) return false;
           const decoder = new TextDecoder(detect_charset(t));
           const text = decoder.decode(t);
           const content = document.getElementById('content');
           const out = rstCompile(text);
+          // Relative links and images resolve against the new page's folder.
+          document.querySelector('base').href = new URL('.', url).href;
           content.innerHTML = out.body;
           applyLanguages(content, codeLanguages(text));
           try { hljs.highlightAll(); } catch (err) { console.log("highlight.js error:", err); }
@@ -124,7 +112,12 @@
             const el = document.getElementById(hash.slice(1));
             if (el) el.scrollIntoView();
           }
-        }).catch(() => {});
+          return true;
+        }).catch(err => {
+          console.warn('RST navigation failed:', url.href, err);
+          if (seq === rstNavSeq) evShowError(url);
+          return false;
+        });
       }
 
       const _rstNav = { stack: [], pos: -1 };
@@ -136,16 +129,15 @@
         _rstUpdateButtons();
       }
 
-      function _rstGoBack() {
-        if (_rstNav.pos <= 0) return;
-        _rstNav.pos--;
-        rstNavigate(_rstNav.stack[_rstNav.pos]);
-      }
-
-      function _rstGoForward() {
-        if (_rstNav.pos >= _rstNav.stack.length - 1) return;
-        _rstNav.pos++;
-        rstNavigate(_rstNav.stack[_rstNav.pos]);
+      // Move in the history only after the page is shown.
+      function _rstGo(step) {
+        const pos = _rstNav.pos + step;
+        if (pos < 0 || pos >= _rstNav.stack.length) return;
+        rstNavigate(_rstNav.stack[pos]).then(ok => {
+          if (!ok) return;
+          _rstNav.pos = pos;
+          _rstUpdateButtons();
+        });
       }
 
       function _rstUpdateButtons() {
@@ -166,17 +158,18 @@
         const bar = document.createElement('div');
         bar.id = 'rst-nav-bar';
         bar.style.cssText = 'position:fixed;top:0;right:0;z-index:9999;display:flex;gap:4px;padding:6px 8px;font-family:sans-serif;user-select:none;';
-        bar.innerHTML = '<button id="rst-nav-back" onclick="_rstGoBack()" style="width:28px;height:28px;border:none;border-radius:4px;background:rgba(128,128,128,0.15);cursor:pointer;font-size:16px;opacity:0.3" title="Back">\u2190</button>' +
-          '<button id="rst-nav-fwd" onclick="_rstGoForward()" style="width:28px;height:28px;border:none;border-radius:4px;background:rgba(128,128,128,0.15);cursor:pointer;font-size:16px;opacity:0.3" title="Forward">\u2192</button>' +
+        bar.innerHTML = '<button id="rst-nav-back" onclick="_rstGo(-1)" style="width:28px;height:28px;border:none;border-radius:4px;background:rgba(128,128,128,0.15);cursor:pointer;font-size:16px;opacity:0.3" title="Back">\u2190</button>' +
+          '<button id="rst-nav-fwd" onclick="_rstGo(1)" style="width:28px;height:28px;border:none;border-radius:4px;background:rgba(128,128,128,0.15);cursor:pointer;font-size:16px;opacity:0.3" title="Forward">\u2192</button>' +
           '<span id="rst-nav-info" style="line-height:28px;font-size:11px;color:#888;padding:0 4px"></span>';
         document.body.appendChild(bar);
       });
 
       // Always-on link handling: in-file "#" anchors scroll to their target,
-      // and same-directory ".rst" links are rendered in-viewer (spec: RST
+      // and ".rst" links are rendered in-viewer (spec: RST
       // section navigation MUST work without an opt-in). Only the floating
       // back/forward history bar requires NavigationUI=1 (see DOMContentLoaded).
       document.addEventListener('click', (e) => {
+        evHideError();
         const link = e.target.closest('a');
         if (!link) return;
         const href = link.getAttribute('href');
@@ -191,15 +184,14 @@
           return;
         }
 
-        // Same-directory .rst links are rendered in-viewer.
+        // .rst links render in place. History changes only after the page is shown.
         if (/\.rst(#.*)?$/i.test(href)) {
           const url = new URL(href, document.baseURI);
-          const curDir = new URL(document.baseURI).pathname.replace(/\/[^/]*$/, '/');
-          const linkDir = url.pathname.replace(/\/[^/]*$/, '/');
-          if (curDir === linkDir) {
+          if (evIsInViewerLink(url)) {
             e.preventDefault();
-            _rstPushNav(url.href);
-            rstNavigate(url.href);
+            rstNavigate(url.href).then(ok => {
+              if (ok) _rstPushNav(url.href);
+            });
           }
         }
       });
