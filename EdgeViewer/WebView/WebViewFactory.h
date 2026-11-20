@@ -35,5 +35,11 @@ HRESULT CreateWebView(void* parentWindow,
                       const std::wstring& fileToLoad,
                       const ProcessorInterface* processor);
 //------------------------------------------------------------------------
+// PDF key routing: the view shows a PDF (true) or not / is closed (false).
+// Keeps the low-level key hook installed while any view shows a PDF.
+void SetPdfKeyRouting(HWND hWnd, bool isPdf);
+// Quick-view Tab: move the focus to the parent and send Tab to Total Commander.
+void ForwardTabToParent(HWND hWnd);
+//------------------------------------------------------------------------
 
 #endif // _WIN32
