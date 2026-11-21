@@ -35,6 +35,9 @@ std::mutex g_viewCreateLock;
 // the PDF key hook below lets them through instead of catching them again.
 constexpr ULONG_PTR EV_INJECTED_KEY = 0x45564B59; // "EVKY"
 
+// Views (lister HWNDs) that show a PDF now (see SetPdfKeyRouting).
+std::set<HWND> g_pdfViews;
+
 void SetColorProfile(const wil::com_ptr<ICoreWebView2>& webview)
 {
 	auto wv13 = webview.try_query<ICoreWebView2_13>();
@@ -331,7 +334,18 @@ void AddAccleratorKeyHandler(ICoreWebView2Controller* controller, HWND hWnd)
 				// put_Handled branch would be dead code. Quick-view Tab
 				// forwarding is done page-side in the document keydown
 				// bridge below (window.__evTabForward + CMD_TAB).
-				if (ZoomHotkeyHandled(controller, key))
+				// PDF: Ctrl+F opens the PDF viewer's search instead of the
+				// Lister search dialog. Browser keys are off for the view
+				// (DisableBrowserHotkeys), so re-enable this one key.
+				const bool pdfFind = key == 'F' && g_pdfViews.contains(hWnd) &&
+					(GetKeyState(VK_CONTROL) & 0x8000) && !(GetKeyState(VK_MENU) & 0x8000) &&
+					!(GetKeyState(VK_SHIFT) & 0x8000);
+				if (pdfFind)
+				{
+					if (auto args2 = wil::try_com_query<ICoreWebView2AcceleratorKeyPressedEventArgs2>(args))
+						args2->put_IsBrowserAcceleratorKeyEnabled(TRUE);
+				}
+				else if (ZoomHotkeyHandled(controller, key))
 					;
 				else
 					PostMessage(hWnd, WM_WEBVIEW_KEYDOWN, key, 0);
@@ -391,7 +405,6 @@ namespace
 //     Ctrl+Alt+G): then the digit goes back to the page;
 //   - Tab / Shift+Tab -> panel switch, quick view with PassTabToTC=1 only.
 // The hook is installed only while at least one view shows a PDF.
-std::set<HWND> g_pdfViews;
 HHOOK g_pdfKeyHook = nullptr;
 
 // The text-field check uses UI Automation (cross-process, may take a while
@@ -442,7 +455,35 @@ bool IsQuickViewTabForward(HWND view)
 		to_int(GlobalSettings()["QuickView"]["PassTabToTC"]);
 }
 
-// True when the focused UI element is a text field (UIA Edit control).
+// DIAG (remove after the check in TC): one line about a UIA element.
+std::wstring DescribeElement(IUIAutomationElement* element)
+{
+	if (!element)
+		return L"(none)";
+	CONTROLTYPEID type = 0;
+	BOOL focus = FALSE, focusable = FALSE;
+	UIA_HWND native = nullptr;
+	wil::unique_bstr name, id, cls, framework, localized;
+	element->get_CurrentControlType(&type);
+	element->get_CurrentHasKeyboardFocus(&focus);
+	element->get_CurrentIsKeyboardFocusable(&focusable);
+	element->get_CurrentNativeWindowHandle(&native);
+	element->get_CurrentName(name.put());
+	element->get_CurrentAutomationId(id.put());
+	element->get_CurrentClassName(cls.put());
+	element->get_CurrentFrameworkId(framework.put());
+	element->get_CurrentLocalizedControlType(localized.put());
+	wchar_t hwndClass[64] = L"";
+	if (native)
+		GetClassNameW(static_cast<HWND>(native), hwndClass, 64);
+	auto str = [](const wil::unique_bstr& b) { return b ? b.get() : L""; };
+	return std::format(L"type {} '{}', name '{}', id '{}', class '{}', framework '{}', focus {}, focusable {}, hwnd class '{}'",
+		type, str(localized), str(name), str(id), str(cls), str(framework), focus, focusable, hwndClass);
+}
+
+// True when the keyboard focus is in a text field (UIA Edit control).
+// The focused element itself can be a container (pane) of the PDF viewer
+// toolbar; then the focused Edit is looked for inside it.
 bool IsTextFieldFocused(IUIAutomation* automation, UINT vk)
 {
 	wil::com_ptr<IUIAutomationElement> element;
@@ -450,16 +491,45 @@ bool IsTextFieldFocused(IUIAutomation* automation, UINT vk)
 		return false;
 	CONTROLTYPEID type = 0;
 	element->get_CurrentControlType(&type);
+	bool textField = type == UIA_EditControlTypeId;
 
-	// DIAG (remove after the check in TC): what UIA reports for the focus.
-	// Visible in DebugView (Sysinternals).
-	wil::unique_bstr name, id;
-	element->get_CurrentName(name.put());
-	element->get_CurrentAutomationId(id.put());
-	OutputDebugStringW(std::format(L"EdgeViewer PDF key {}: control type {}, name '{}', id '{}'\n",
-		static_cast<wchar_t>(vk), type, name ? name.get() : L"", id ? id.get() : L"").c_str());
+	wil::com_ptr<IUIAutomationElement> inner;
+	if (!textField)
+	{
+		VARIANT yes{};
+		yes.vt = VT_BOOL;
+		yes.boolVal = VARIANT_TRUE;
+		VARIANT edit{};
+		edit.vt = VT_I4;
+		edit.lVal = UIA_EditControlTypeId;
+		wil::com_ptr<IUIAutomationCondition> hasFocus, isEdit, both;
+		if (SUCCEEDED(automation->CreatePropertyCondition(UIA_HasKeyboardFocusPropertyId, yes, &hasFocus)) &&
+			SUCCEEDED(automation->CreatePropertyCondition(UIA_ControlTypePropertyId, edit, &isEdit)) &&
+			SUCCEEDED(automation->CreateAndCondition(hasFocus.get(), isEdit.get(), &both)) &&
+			SUCCEEDED(element->FindFirst(TreeScope_Descendants, both.get(), &inner)) && inner)
+			textField = true;
+	}
 
-	return type == UIA_EditControlTypeId;
+	// DIAG (remove after the check in TC): the focused element, a focused
+	// Edit inside it, and its parents. Visible in DebugView (Sysinternals).
+	OutputDebugStringW(std::format(L"EdgeViewer PDF key {}: text field {}\n", static_cast<wchar_t>(vk), textField).c_str());
+	OutputDebugStringW(std::format(L"  focus:  {}\n", DescribeElement(element.get())).c_str());
+	OutputDebugStringW(std::format(L"  inner:  {}\n", DescribeElement(inner.get())).c_str());
+	wil::com_ptr<IUIAutomationTreeWalker> walker;
+	if (SUCCEEDED(automation->get_ControlViewWalker(&walker)) && walker)
+	{
+		wil::com_ptr<IUIAutomationElement> current = element;
+		for (int level = 1; level <= 6; ++level)
+		{
+			wil::com_ptr<IUIAutomationElement> parent;
+			if (FAILED(walker->GetParentElement(current.get(), &parent)) || !parent)
+				break;
+			OutputDebugStringW(std::format(L"  up {}:   {}\n", level, DescribeElement(parent.get())).c_str());
+			current = parent;
+		}
+	}
+
+	return textField;
 }
 
 void SendKeyToFocus(UINT vk)
