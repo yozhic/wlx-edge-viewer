@@ -481,9 +481,9 @@ std::wstring DescribeElement(IUIAutomationElement* element)
 		type, str(localized), str(name), str(id), str(cls), str(framework), focus, focusable, hwndClass);
 }
 
-// True when the keyboard focus is in a text field (UIA Edit control).
-// The focused element itself can be a container (pane) of the PDF viewer
-// toolbar; then the focused Edit is looked for inside it.
+// True when the keyboard focus is in a text field (UIA Edit control), e.g.
+// the PDF toolbar page number box. The page content is visible to UIA only
+// after Accessibility.enable (see the SourceChanged handler).
 bool IsTextFieldFocused(IUIAutomation* automation, UINT vk)
 {
 	wil::com_ptr<IUIAutomationElement> element;
@@ -491,45 +491,11 @@ bool IsTextFieldFocused(IUIAutomation* automation, UINT vk)
 		return false;
 	CONTROLTYPEID type = 0;
 	element->get_CurrentControlType(&type);
-	bool textField = type == UIA_EditControlTypeId;
 
-	wil::com_ptr<IUIAutomationElement> inner;
-	if (!textField)
-	{
-		VARIANT yes{};
-		yes.vt = VT_BOOL;
-		yes.boolVal = VARIANT_TRUE;
-		VARIANT edit{};
-		edit.vt = VT_I4;
-		edit.lVal = UIA_EditControlTypeId;
-		wil::com_ptr<IUIAutomationCondition> hasFocus, isEdit, both;
-		if (SUCCEEDED(automation->CreatePropertyCondition(UIA_HasKeyboardFocusPropertyId, yes, &hasFocus)) &&
-			SUCCEEDED(automation->CreatePropertyCondition(UIA_ControlTypePropertyId, edit, &isEdit)) &&
-			SUCCEEDED(automation->CreateAndCondition(hasFocus.get(), isEdit.get(), &both)) &&
-			SUCCEEDED(element->FindFirst(TreeScope_Descendants, both.get(), &inner)) && inner)
-			textField = true;
-	}
+	// DIAG (remove after the check in TC). Visible in DebugView (Sysinternals).
+	OutputDebugStringW(std::format(L"EdgeViewer PDF key {}: {}\n", static_cast<wchar_t>(vk), DescribeElement(element.get())).c_str());
 
-	// DIAG (remove after the check in TC): the focused element, a focused
-	// Edit inside it, and its parents. Visible in DebugView (Sysinternals).
-	OutputDebugStringW(std::format(L"EdgeViewer PDF key {}: text field {}\n", static_cast<wchar_t>(vk), textField).c_str());
-	OutputDebugStringW(std::format(L"  focus:  {}\n", DescribeElement(element.get())).c_str());
-	OutputDebugStringW(std::format(L"  inner:  {}\n", DescribeElement(inner.get())).c_str());
-	wil::com_ptr<IUIAutomationTreeWalker> walker;
-	if (SUCCEEDED(automation->get_ControlViewWalker(&walker)) && walker)
-	{
-		wil::com_ptr<IUIAutomationElement> current = element;
-		for (int level = 1; level <= 6; ++level)
-		{
-			wil::com_ptr<IUIAutomationElement> parent;
-			if (FAILED(walker->GetParentElement(current.get(), &parent)) || !parent)
-				break;
-			OutputDebugStringW(std::format(L"  up {}:   {}\n", level, DescribeElement(parent.get())).c_str());
-			current = parent;
-		}
-	}
-
-	return textField;
+	return type == UIA_EditControlTypeId;
 }
 
 void SendKeyToFocus(UINT vk)
@@ -841,13 +807,29 @@ HRESULT QueueConfigureWebView2(HWND hWnd, const std::wstring& fileToLoad, const 
 							AddNativeContextMenu(webview, hWnd);
 
 							// PDF key routing (see PdfKeyHookProc): track
-							// whether this view shows a PDF now.
+							// whether this view shows a PDF now. For a PDF also
+							// turn on page accessibility for this view only:
+							// without it UI Automation sees no page elements and
+							// cannot tell the page number box from the page
+							// (the --force-renderer-accessibility switch would do
+							// it for every view of the shared browser process).
 							webview->add_SourceChanged(Callback<ICoreWebView2SourceChangedEventHandler>(
 								[hWnd](ICoreWebView2* sender, ICoreWebView2SourceChangedEventArgs*)
 								{
 									wil::unique_cotaskmem_string uri;
 									sender->get_Source(&uri);
-									SetPdfKeyRouting(hWnd, uri && IsPdfUri(uri.get()));
+									const bool isPdf = uri && IsPdfUri(uri.get());
+									SetPdfKeyRouting(hWnd, isPdf);
+									if (isPdf)
+										sender->CallDevToolsProtocolMethod(L"Accessibility.enable", L"{}",
+											Callback<ICoreWebView2CallDevToolsProtocolMethodCompletedHandler>(
+												[](HRESULT result, LPCWSTR)
+												{
+													// DIAG (remove after the check in TC)
+													OutputDebugStringW(std::format(L"EdgeViewer PDF Accessibility.enable: 0x{:08X}\n",
+														static_cast<unsigned long>(result)).c_str());
+													return S_OK;
+												}).Get());
 									return S_OK;
 								}).Get(), &token);
 
