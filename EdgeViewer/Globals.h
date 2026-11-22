@@ -33,6 +33,7 @@
 
 #define WM_WEBVIEW_KEYDOWN WM_USER
 #define WM_WEBVIEW_JS_KEYDOWN (WM_USER + 1)
+#define WM_WEBVIEW_TAB (WM_USER + 2)
 #define CMD_NAVIGATE 0
 #define CMD_PRINT 1
 #define CMD_SEARCH 2

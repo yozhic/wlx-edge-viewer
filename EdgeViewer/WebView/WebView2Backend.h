@@ -44,6 +44,8 @@ public:
 	// Not part of the IWebView contract.
 	wil::com_ptr<ICoreWebView2Controller> GetController() const { return mController; }
 	wil::com_ptr<ICoreWebView2> GetWebView() const { return mWebView; }
+	// Reads the file behind an evh:// URI (CMD_READ, WebViewFactory.cpp).
+	bool ReadEvhFile(const std::wstring& uri, std::vector<uint8_t>& outBytes);
 
 private:
 	// Installs the evh:// WebResourceRequested handler that serves a
@@ -51,7 +53,9 @@ private:
 	// folder with Content-Type: text/html for .xml/.xhtml (see
 	// HtmlProcessor -- Windows only). No-op after the first call.
 	void InstallForcedHtmlSchemeHandler();
-	// Translation + serving half of the evh:// handler (see .cpp).
+	// evh:// URI -> file inside the mapped folder.
+	bool ResolveEvhUri(const std::wstring& uri, std::filesystem::path& outFile);
+	// Serving half of the evh:// handler (see .cpp).
 	bool BuildForcedHtmlResponse(const wchar_t* uri, ICoreWebView2Environment* environment,
 	                             ICoreWebView2WebResourceResponse** outResponse);
 	// Guard for m_hostFolders (written on OpenIn, read on the
