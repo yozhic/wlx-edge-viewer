@@ -63,25 +63,11 @@ const markdownAlertExtension = {
   }
 };
 
+// Text for <pre class="mermaid">: escape only what HTML needs.
+// Do not turn spaces into &nbsp;: mermaid.run() decodes it to U+00A0, and the
+// Langium-based diagrams (pie, gitGraph, packet, ...) reject that character.
 function escapeHtml(str){
-  const entityList = [
-    {char:"&",entity:"&amp;"},
-    {char:"<",entity:"&lt;"},
-    {char:">",entity:"&gt;"},
-    {char:"\"",entity:"&quot;"},
-    {char:"\x20",entity:"&nbsp;"},
-    {char:"–",entity:"&ndash;"},
-    {char:"—",entity:"&mdash;"},
-    {char:"©",entity:"&copy;"},
-    {char:"®",entity:"&reg;"},
-    {char:"™",entity:"&trade;"},
-    {char:"≈",entity:"&asymp;"},
-    {char:"≠",entity:"&ne;"},
-    {char:"£",entity:"&pound;"},
-    {char:"€",entity:"&euro;"},
-    {char:"°",entity:"&deg;"}
-  ];
-  return entityList.reduce((s,{char, entity}) => s.replaceAll(char, entity),str);
+  return str.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'})[c]);
 }
 const customRenderer = {
   code({ text, lang }) {
