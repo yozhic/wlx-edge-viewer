@@ -3,6 +3,7 @@
 #include "Navigator.h"
 #include "IWebView.h"
 #include "WebView/WebView2Backend.h"
+#include "WebView/WebViewFactory.h"
 
 #include <ShlObj.h>
 #include <atlbase.h>
@@ -91,6 +92,10 @@ LRESULT CALLBACK pluginWndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lP
 			{
 				PostMessage(GetParent(hWnd), WM_KEYDOWN, wParam, NULL);
 			}
+			break;
+
+		case WM_WEBVIEW_TAB:
+			ForwardTabToParent(hWnd);
 			break;
 		}
 	}

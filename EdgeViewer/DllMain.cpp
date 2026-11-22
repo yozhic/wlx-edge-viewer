@@ -151,6 +151,7 @@ int __stdcall ListLoadNext(HWND ParentWin, HWND ListWin, const char* FileToLoad,
 //------------------------------------------------------------------------
 void __stdcall ListCloseWindow(HWND ListWin)
 {
+	SetPdfKeyRouting(ListWin, false);
 	if (gs_Views.find(ListWin) != gs_Views.end())
 	{
 		gs_Views[ListWin]->Close();

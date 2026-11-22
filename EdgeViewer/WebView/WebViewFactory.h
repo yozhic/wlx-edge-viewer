@@ -35,5 +35,9 @@ HRESULT CreateWebView(void* parentWindow,
                       const std::wstring& fileToLoad,
                       const ProcessorInterface* processor);
 //------------------------------------------------------------------------
+// The view shows a PDF (false also when the view closes).
+void SetPdfKeyRouting(HWND hWnd, bool isPdf);
+void ForwardTabToParent(HWND hWnd);
+//------------------------------------------------------------------------
 
 #endif // _WIN32

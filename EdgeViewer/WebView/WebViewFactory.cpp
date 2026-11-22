@@ -16,14 +16,40 @@
 #include <webview2environmentoptions.h>
 #include <wrl.h>
 #include <wil/com.h>
+#include <UIAutomation.h>
+#include <condition_variable>
+#include <deque>
 #include <mutex>
 #include <regex>
+#include <set>
+#include <sstream>
+#include <thread>
 
 using namespace Microsoft::WRL;
 
 namespace
 {
 std::mutex g_viewCreateLock;
+
+// dwExtraInfo of the digits the PDF key hook sends back to the page.
+constexpr ULONG_PTR EV_INJECTED_KEY = 0x45564B59;
+
+std::set<HWND> g_pdfViews;
+
+// [PDF] ListerKeys, off when no [Extensions] list contains PDF.
+bool PdfListerKeysEnabled()
+{
+	if (!to_int(GlobalSettings()["PDF"]["ListerKeys"]))
+		return false;
+	for (const auto& [type, list] : GlobalSettings()["Extensions"])
+	{
+		std::istringstream tokens(list);
+		for (std::string ext; std::getline(tokens, ext, ',');)
+			if (_stricmp(ext.c_str(), "PDF") == 0)
+				return true;
+	}
+	return false;
+}
 
 void SetColorProfile(const wil::com_ptr<ICoreWebView2>& webview)
 {
@@ -321,7 +347,16 @@ void AddAccleratorKeyHandler(ICoreWebView2Controller* controller, HWND hWnd)
 				// put_Handled branch would be dead code. Quick-view Tab
 				// forwarding is done page-side in the document keydown
 				// bridge below (window.__evTabForward + CMD_TAB).
-				if (ZoomHotkeyHandled(controller, key))
+				// PDF: Ctrl+F opens the PDF search, not the Lister one.
+				const bool pdfFind = key == 'F' && g_pdfViews.contains(hWnd) &&
+					(GetKeyState(VK_CONTROL) & 0x8000) && !(GetKeyState(VK_MENU) & 0x8000) &&
+					!(GetKeyState(VK_SHIFT) & 0x8000);
+				if (pdfFind)
+				{
+					if (auto args2 = wil::try_com_query<ICoreWebView2AcceleratorKeyPressedEventArgs2>(args))
+						args2->put_IsBrowserAcceleratorKeyEnabled(TRUE);
+				}
+				else if (ZoomHotkeyHandled(controller, key))
 					;
 				else
 					PostMessage(hWnd, WM_WEBVIEW_KEYDOWN, key, 0);
@@ -332,6 +367,8 @@ void AddAccleratorKeyHandler(ICoreWebView2Controller* controller, HWND hWnd)
 
 void HandleSaveAttachment(ICoreWebView2* webview, HWND hWnd, const std::vector<std::wstring>& tokens);
 void HandleHostRead(ICoreWebView2* webview, HWND hWnd, const std::vector<std::wstring>& tokens);
+
+} // namespace
 
 void ForwardTabToParent(HWND hWnd)
 {
@@ -362,6 +399,134 @@ void ForwardTabToParent(HWND hWnd)
 	inputs[1] = inputs[0];
 	inputs[1].ki.dwFlags = KEYEVENTF_KEYUP;
 	SendInput(2, inputs, sizeof(INPUT));
+}
+
+namespace
+{
+// The PDF viewer runs in its own frame: the page keydown bridge does not
+// reach it, and WebView2 raises no AcceleratorKeyPressed for digits or Tab.
+// While a PDF is shown, a low-level hook takes these keys from a focused
+// PDF view: 1..8 go to Lister unless a text field (the page number box)
+// has the focus; Tab goes to TC in quick view.
+HHOOK g_pdfKeyHook = nullptr;
+
+// The text field check (UI Automation, cross-process) runs on a worker
+// thread in key order: a slow hook would be removed by Windows.
+struct
+{
+	std::mutex lock;
+	std::condition_variable wake;
+	std::deque<std::pair<HWND, UINT>> keys;
+	bool stop = false;
+	std::thread worker;
+} g_pdfDigits;
+
+bool IsKeyHeld(int vk)
+{
+	return (GetAsyncKeyState(vk) & 0x8000) != 0;
+}
+
+bool IsPdfUri(std::wstring uri)
+{
+	uri = uri.substr(0, uri.find_first_of(L"?#"));
+	return uri.size() >= 4 && _wcsicmp(uri.c_str() + uri.size() - 4, L".pdf") == 0;
+}
+
+// WebView2 windows belong to the browser process but are children of the
+// lister window.
+HWND FocusedPdfView()
+{
+	GUITHREADINFO info{ sizeof(info) };
+	if (!GetGUIThreadInfo(0, &info) || !info.hwndFocus)
+		return nullptr;
+	for (HWND view : g_pdfViews)
+		if (IsChild(view, info.hwndFocus))
+			return view;
+	return nullptr;
+}
+
+bool IsQuickViewTabForward(HWND view)
+{
+	const auto it = gs_QuickView.find(view);
+	return it != gs_QuickView.end() && it->second &&
+		to_int(GlobalSettings()["QuickView"]["PassTabToTC"]);
+}
+
+bool IsTextFieldFocused(IUIAutomation* automation)
+{
+	wil::com_ptr<IUIAutomationElement> element;
+	CONTROLTYPEID type = 0;
+	return automation && SUCCEEDED(automation->GetFocusedElement(&element)) && element &&
+		SUCCEEDED(element->get_CurrentControlType(&type)) && type == UIA_EditControlTypeId;
+}
+
+void SendKeyToFocus(UINT vk)
+{
+	INPUT inputs[2] = {};
+	inputs[0].type = INPUT_KEYBOARD;
+	inputs[0].ki.wVk = static_cast<WORD>(vk);
+	inputs[0].ki.wScan = static_cast<WORD>(MapVirtualKeyW(vk, MAPVK_VK_TO_VSC));
+	inputs[0].ki.dwExtraInfo = EV_INJECTED_KEY;
+	inputs[1] = inputs[0];
+	inputs[1].ki.dwFlags = KEYEVENTF_KEYUP;
+	SendInput(2, inputs, sizeof(INPUT));
+}
+
+void PdfDigitWorker()
+{
+	CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+	{
+		wil::com_ptr<IUIAutomation> automation;
+		CoCreateInstance(__uuidof(CUIAutomation), nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&automation));
+		for (;;)
+		{
+			std::pair<HWND, UINT> key;
+			{
+				std::unique_lock lock(g_pdfDigits.lock);
+				g_pdfDigits.wake.wait(lock, [] { return g_pdfDigits.stop || !g_pdfDigits.keys.empty(); });
+				if (g_pdfDigits.stop)
+					break;
+				key = g_pdfDigits.keys.front();
+				g_pdfDigits.keys.pop_front();
+			}
+			if (IsTextFieldFocused(automation.get()))
+				SendKeyToFocus(key.second);
+			else
+				PostMessage(key.first, WM_WEBVIEW_JS_KEYDOWN, key.second, 0);
+		}
+	}
+	CoUninitialize();
+}
+
+LRESULT CALLBACK PdfKeyHookProc(int code, WPARAM wParam, LPARAM lParam)
+{
+	if (code == HC_ACTION && wParam == WM_KEYDOWN)
+	{
+		const auto* key = reinterpret_cast<const KBDLLHOOKSTRUCT*>(lParam);
+		const bool digit = key->vkCode >= '1' && key->vkCode <= '8';
+		if ((digit || key->vkCode == VK_TAB) && key->dwExtraInfo != EV_INJECTED_KEY &&
+			!IsKeyHeld(VK_CONTROL) && !IsKeyHeld(VK_MENU) && !IsKeyHeld(VK_LWIN) && !IsKeyHeld(VK_RWIN))
+		{
+			if (const HWND view = FocusedPdfView())
+			{
+				if (digit && g_pdfDigits.worker.joinable() && !IsKeyHeld(VK_SHIFT))
+				{
+					{
+						std::scoped_lock lock(g_pdfDigits.lock);
+						g_pdfDigits.keys.emplace_back(view, key->vkCode);
+					}
+					g_pdfDigits.wake.notify_one();
+					return 1;
+				}
+				if (!digit && IsQuickViewTabForward(view))
+				{
+					PostMessage(view, WM_WEBVIEW_TAB, 0, 0);
+					return 1;
+				}
+			}
+		}
+	}
+	return CallNextHookEx(nullptr, code, wParam, lParam);
 }
 
 void ParseAndPostMessage(ICoreWebView2Controller* controller, ICoreWebView2* webview, HWND hWnd, const wil::unique_cotaskmem_string& message)
@@ -511,6 +676,10 @@ HRESULT QueueConfigureWebView2(HWND hWnd, const std::wstring& fileToLoad, const 
 	// AdditionalBrowserArguments (restores master's [Chromium] Switches).
 	// The switches are plain ASCII, so this wstring conversion is acceptable.
 	auto switches = GlobalSettings()["WebView"]["Switches"];
+	// The PDF page number box is visible to UI Automation only with this
+	// switch; it applies to the whole browser process, not to one view.
+	if (PdfListerKeysEnabled())
+		switches += " --force-renderer-accessibility";
 	auto options = Make<CoreWebView2EnvironmentOptions>();
 	options->put_AdditionalBrowserArguments(std::wstring(std::begin(switches), std::end(switches)).c_str());
 
@@ -602,6 +771,15 @@ HRESULT QueueConfigureWebView2(HWND hWnd, const std::wstring& fileToLoad, const 
 							// capability (HTML/MHT).
 							AddNativeContextMenu(webview, hWnd);
 
+							webview->add_SourceChanged(Callback<ICoreWebView2SourceChangedEventHandler>(
+								[hWnd](ICoreWebView2* sender, ICoreWebView2SourceChangedEventArgs*)
+								{
+									wil::unique_cotaskmem_string uri;
+									sender->get_Source(&uri);
+									SetPdfKeyRouting(hWnd, uri && IsPdfUri(uri.get()));
+									return S_OK;
+								}).Get(), &token);
+
 							controller->add_ZoomFactorChanged(Callback<ICoreWebView2ZoomFactorChangedEventHandler>(
 								[=](ICoreWebView2Controller* sender, IUnknown* args)
 								{
@@ -660,6 +838,41 @@ HRESULT QueueConfigureWebView2(HWND hWnd, const std::wstring& fileToLoad, const 
 }
 } // namespace
 
+//------------------------------------------------------------------------
+void SetPdfKeyRouting(HWND hWnd, bool isPdf)
+{
+	if (isPdf)
+		g_pdfViews.insert(hWnd);
+	else
+		g_pdfViews.erase(hWnd);
+
+	const bool listerKeys = PdfListerKeysEnabled();
+	if (!g_pdfViews.empty() && !g_pdfKeyHook &&
+		(listerKeys || to_int(GlobalSettings()["QuickView"]["PassTabToTC"])))
+	{
+		g_pdfKeyHook = SetWindowsHookExW(WH_KEYBOARD_LL, PdfKeyHookProc, gs_PluginInstance, 0);
+		if (g_pdfKeyHook && listerKeys)
+		{
+			g_pdfDigits.stop = false;
+			g_pdfDigits.worker = std::thread(PdfDigitWorker);
+		}
+	}
+	else if (g_pdfViews.empty() && g_pdfKeyHook)
+	{
+		UnhookWindowsHookEx(g_pdfKeyHook);
+		g_pdfKeyHook = nullptr;
+		if (g_pdfDigits.worker.joinable())
+		{
+			{
+				std::scoped_lock lock(g_pdfDigits.lock);
+				g_pdfDigits.stop = true;
+				g_pdfDigits.keys.clear();
+			}
+			g_pdfDigits.wake.notify_one();
+			g_pdfDigits.worker.join();
+		}
+	}
+}
 //------------------------------------------------------------------------
 #ifdef _WIN32
 HRESULT CreateWebView(void* parentWindow,
