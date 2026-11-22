@@ -23,7 +23,7 @@
   <body>
     <div id="content"></div>
     
-    <script>window.__MD_NAVIGATION__ = __MD_NAV_FLAG__; window.__IS_DARK__ = __IS_DARK__;</script>
+    <script>window.__MD_NAVIGATION__ = __MD_NAV_FLAG__; window.__MD_DARK__ = __IS_DARK__;</script>
     <script>
       // The plugin pre-fetches the file and base64-encodes it. The
       // inlined value is a base64 string literal (RFC 4648 charset is
@@ -56,7 +56,7 @@
 
           // ---- Mermaid ----
           try {
-              mermaid.initialize({ startOnLoad: false, theme: window.__IS_DARK__ ? 'dark' : 'default' });
+              mermaid.initialize({ startOnLoad: false, theme: window.__MD_DARK__ ? 'dark' : 'default' });
               await mermaid.run();
           } catch(e) {
               console.log("Mermaid error:", e);
