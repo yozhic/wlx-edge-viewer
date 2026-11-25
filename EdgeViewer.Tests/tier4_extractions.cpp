@@ -13,6 +13,7 @@ TEST_CASE("BuildDetectString matches full shipped ini format", "[t4][smoke]") {
         .with("Extensions", "AsciiDoc", "ADOC,ASCIIDOC")
         .with("Extensions", "URL", "URL")
         .with("Extensions", "MHTML", "MHT,MHTML")
+        .with("Extensions", "CHM", "CHM")
         .with("Extensions", "EML", "EML")
         .with("Extensions", "RST", "RST")
         .with("Extensions", "Images", "PNG,GIF,BMP,JPG,JPEG,ICO,WEBP,SVG")
@@ -26,6 +27,7 @@ TEST_CASE("BuildDetectString matches full shipped ini format", "[t4][smoke]") {
         "|EXT=\"ADOC\"|EXT=\"ASCIIDOC\""
         "|EXT=\"URL\""
         "|EXT=\"MHT\"|EXT=\"MHTML\""
+        "|EXT=\"CHM\""
         "|EXT=\"EML\""
         "|EXT=\"RST\""
         "|EXT=\"PNG\"|EXT=\"GIF\"|EXT=\"BMP\"|EXT=\"JPG\"|EXT=\"JPEG\"|EXT=\"ICO\"|EXT=\"WEBP\"|EXT=\"SVG\""
