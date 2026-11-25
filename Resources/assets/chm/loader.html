@@ -167,8 +167,11 @@
 	}
 	// After a foreign page the frame may stay in another browser process whose
 	// requests do not reach the evh:// handler (help pages lost their CSS).
-	// A new frame element does not have this problem.
+	// A new frame element does not have this problem. The focus was in the
+	// old frame: give it to the new one when it has loaded.
+	var refocus = false;
 	function rebuildFrame(url) {
+		refocus = refocus || document.hasFocus() || document.activeElement === frame;
 		var nf = document.createElement('iframe');
 		nf.id = 'ev-chm-frame';
 		nf.className = 'ev-chm-frame';
@@ -291,6 +294,11 @@
 		return !!a && a !== document.body && a !== frame && side.contains(a);
 	}
 	function focusTopic() {
+		if (refocus) {
+			refocus = false;
+			if (!inLeftPane()) { try { frame.contentWindow.focus(); } catch (e) {} }
+			return;
+		}
 		if (!document.hasFocus()) return;
 		if (inLeftPane() && !noToc && tocOpen()) return;
 		try { frame.contentWindow.focus(); } catch (e) {}
