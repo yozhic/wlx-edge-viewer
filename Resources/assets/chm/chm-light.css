@@ -1,0 +1,189 @@
+/* EdgeViewer: CHM view, light theme ([CHM] CSS in edgeviewer.ini).
+
+   The plugin inserts this file into the CHM view and into every help page,
+   after the built-in rules, so any rule here wins. Relative url(...) paths
+   do not work here (the text is inserted, not loaded as a file).
+
+   Structure of the view:
+     html.ev-chm-loader                 the view (dark theme: also .ev-dark)
+       nav.ev-chm-side                  left pane
+         div.ev-chm-toolbar             buttons above the table of contents
+           button.ev-chm-btn.ev-chm-btn-home      Home
+           button.ev-chm-btn.ev-chm-btn-back      Back (disabled: nothing to go back to)
+           button.ev-chm-btn.ev-chm-btn-forward   Forward
+           button.ev-chm-btn.ev-chm-btn-collapse  Hide contents (Alt+T)
+             svg                        icon (stroke = currentColor)
+         div.ev-chm-filter              filter row under the buttons
+           input.ev-chm-filter-input    filter field (fuzzy: letters in order);
+                                        Alt+F moves the focus here, Esc clears it,
+                                        Down (empty field) goes to the first entry
+           span.ev-chm-filter-icon      funnel icon (svg, stroke = currentColor)
+         div.ev-chm-toc                 table of contents (hidden while filtering);
+                                        ::after = empty line after the last entry
+           a.ev-chm-toc-item            entry with a page
+           span.ev-chm-toc-item.ev-chm-toc-folder   entry without a page
+           .ev-chm-toc-current          entry of the page shown on the right
+             data-level="0", "1", ...   nesting level (also --ev-level)
+         div.ev-chm-results             matches, best first (shown while filtering)
+           a.ev-chm-result              one match (.ev-chm-result-active: selected)
+             span.ev-chm-result-name    title, found letters in mark.ev-chm-filter-hit
+             span.ev-chm-result-path    parent entries
+           div.ev-chm-results-empty     "Nothing found"
+       div.ev-chm-splitter              border: drag to resize the left pane
+                                        (double click: back to the width below)
+       div.ev-chm-strip                 narrow strip while the contents are hidden
+         button.ev-chm-btn.ev-chm-btn-expand      Show contents (Alt+T)
+       div.ev-chm-main                  right pane
+         iframe.ev-chm-frame            the help page
+         div.ev-nav-error               message: page cannot be opened
+           button.ev-nav-error-back
+           span.ev-nav-error-text
+             span.ev-nav-error-reason   second line: the reason
+   States of <html>:
+     .ev-chm-toc-closed                 the table of contents is hidden
+     .ev-chm-resizing                   the border is being dragged
+     .ev-chm-filtering                  the filter field has text
+     .ev-chm-no-toc                     the CHM has no table of contents
+                                        (the left pane is hidden)
+   The frame gets .ev-chm-frame-error while it shows the browser's error page.
+
+   Help pages: <html> gets the class ev-chm-topic, so page rules can be
+   limited to them, e.g.  html.ev-chm-topic body { font-size: 15px; }
+*/
+
+/* ---- Left pane ---- */
+.ev-chm-side {
+	width: 280px;
+	background: #fff;
+	color: #222;
+	border-right: 1px solid #d0d0d0;
+	font: 13px system-ui, sans-serif;
+}
+
+/* ---- Buttons ---- */
+.ev-chm-toolbar {
+	border-bottom: 1px solid #d0d0d0;
+}
+
+.ev-chm-btn {
+	width: 28px;
+	height: 26px;
+	border-radius: 4px;
+}
+
+.ev-chm-btn:hover:not(:disabled) {
+	background: rgba(0, 0, 0, 0.08);
+}
+
+/* Icon size and line width */
+.ev-chm-btn svg {
+	width: 16px;
+	height: 16px;
+	stroke-width: 1.6;
+}
+
+/* Home button: its icon stands right above the funnel icon of the filter
+   field (both centred 15 px from the left edge). Change together with
+   .ev-chm-filter-icon "left". */
+.ev-chm-btn-home {
+	margin-left: -5px;
+}
+
+/* Narrow strip while the contents are hidden */
+.ev-chm-strip {
+	width: 22px;
+	border-right: 1px solid #d0d0d0;
+}
+
+/* ---- Table of contents ---- */
+.ev-chm-toc-item {
+	padding-top: 2px;
+	padding-bottom: 2px;
+	padding-left: calc(var(--ev-level, 0) * 14px);  /* indent per level */
+	color: #222;
+}
+
+a.ev-chm-toc-item:hover {
+	color: #0b57d0;
+	text-decoration: underline;
+}
+
+.ev-chm-toc-folder {
+	color: #666;
+	opacity: 1;
+}
+
+/* Entry of the page shown on the right */
+.ev-chm-toc-current {
+	background: rgba(11, 87, 208, 0.12);
+	border-radius: 3px;
+}
+
+/* Border between the contents and the page (drag area) */
+.ev-chm-splitter:hover {
+	background: rgba(128, 128, 128, 0.3);
+}
+
+/* ---- Filter ---- */
+
+/* The row under the buttons: full width, separated by a line below */
+.ev-chm-filter {
+	border-bottom: 1px solid #d0d0d0;
+}
+
+/* The field: no frame, square corners; padding keeps the text off the edge
+   (28 px on the left: room for the funnel icon). The focus is shown by the
+   background. */
+.ev-chm-filter-input {
+	padding: 0 8px 0 28px;
+	border: 0;
+	border-radius: 0;
+}
+
+.ev-chm-filter-input:focus {
+	background: rgba(0, 0, 0, 0.06);
+}
+
+/* Funnel icon at the left of the field */
+.ev-chm-filter-icon {
+	left: 8px;
+	opacity: 0.6;
+}
+
+.ev-chm-filter-icon svg {
+	width: 14px;
+	height: 14px;
+	stroke-width: 1.4;
+}
+
+/* Example: hide the icon while the field has text
+.ev-chm-filter-input:not(:placeholder-shown) ~ .ev-chm-filter-icon {
+	display: none;
+}
+*/
+
+/* Found letters */
+.ev-chm-filter-hit {
+	background: rgba(255, 213, 0, 0.45);
+}
+
+/* Selected match (arrows, Enter) */
+.ev-chm-result-active {
+	background: rgba(11, 87, 208, 0.12);
+}
+
+/* Example: top-level entries in bold
+.ev-chm-toc-item[data-level="0"] {
+	font-weight: 600;
+}
+*/
+
+/* ---- Help pages ---- */
+
+/* Keyboard focus frame (Tab) on links and buttons. Some help pages switch
+   it off (a:focus { outline: none }); this rule brings it back. */
+html.ev-chm-topic :focus-visible {
+	outline: 2px solid #0b57d0 !important;
+	outline-offset: 1px;
+	border-radius: 3px;  /* rounded corners of the frame */
+}

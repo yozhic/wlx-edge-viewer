@@ -15,6 +15,9 @@
     <Filter Include="Sources\Processors">
       <UniqueIdentifier>{53d440c9-55b5-43be-b3ce-d6f80125c512}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Sources\libmspack">
+      <UniqueIdentifier>{6b1f0c3e-8a2d-4c57-9e41-3d7a5c2b9f10}</UniqueIdentifier>
+    </Filter>
     <Filter Include="Resources">
       <UniqueIdentifier>{73f86103-4aba-4b79-8e3b-4f1f4874b16a}</UniqueIdentifier>
     </Filter>
@@ -31,6 +34,21 @@
     </ClCompile>
     <ClCompile Include="Globals.cpp">
       <Filter>Sources</Filter>
+    </ClCompile>
+    <ClCompile Include="ChmArchive.cpp">
+      <Filter>Sources</Filter>
+    </ClCompile>
+    <ClCompile Include="Processors\ChmProcessor.cpp">
+      <Filter>Sources\Processors</Filter>
+    </ClCompile>
+    <ClCompile Include="third_party\libmspack\mspack\chmd.c">
+      <Filter>Sources\libmspack</Filter>
+    </ClCompile>
+    <ClCompile Include="third_party\libmspack\mspack\lzxd.c">
+      <Filter>Sources\libmspack</Filter>
+    </ClCompile>
+    <ClCompile Include="third_party\libmspack\mspack\system.c">
+      <Filter>Sources\libmspack</Filter>
     </ClCompile>
     <ClCompile Include="CharsetOverride.cpp">
       <Filter>Sources</Filter>
@@ -91,6 +109,12 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="ChmArchive.h">
+      <Filter>Headers</Filter>
+    </ClInclude>
+    <ClInclude Include="Processors\ChmProcessor.h">
+      <Filter>Headers\Processors</Filter>
+    </ClInclude>
     <ClInclude Include="Globals.h">
       <Filter>Headers</Filter>
     </ClInclude>

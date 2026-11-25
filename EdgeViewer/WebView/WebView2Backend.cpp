@@ -1,6 +1,8 @@
 #include "WebView2Backend.h"
 #include "Globals.h"
 #include "CharsetOverride.h"
+#include "ChmArchive.h"
+#include "WebPolicy.h"
 
 #include <wrl.h>
 #include <shlwapi.h>
@@ -308,6 +310,9 @@ bool WebView2Backend::BuildForcedHtmlResponse(
 {
 	*outResponse = nullptr;
 
+	if (IsChmUri(uri))
+		return BuildChmResponse(uri, environment, outResponse);
+
 	std::filesystem::path filePath;
 	std::vector<uint8_t> bytes;
 	if (!ResolveEvhUri(uri, filePath) || !ReadFileBytes(filePath, bytes))
@@ -324,6 +329,146 @@ bool WebView2Backend::BuildForcedHtmlResponse(
 	}
 
 	const std::wstring headers = L"Content-Type: " + MimeForPath(filePath) + L"\r\n";
+	environment->CreateWebResourceResponse(stream.get(), 200, L"OK", headers.c_str(), outResponse);
+	return true;
+}
+//------------------------------------------------------------------------
+void WebView2Backend::RegisterChmArchive(const std::wstring& id, std::shared_ptr<ChmArchive> archive,
+                                         const std::wstring& loaderHtml)
+{
+	std::lock_guard lock(m_chmMutex);
+	m_chmId = id;
+	m_chm = std::move(archive);
+	m_chmLoaderUtf8 = to_utf8(loaderHtml);
+	m_chmCharsetOverride.clear();
+	InstallChmFrameHandlers();
+}
+//------------------------------------------------------------------------
+// The loader cannot see a failed load in its frame (the error page is
+// cross-origin): report each frame navigation to it.
+void WebView2Backend::InstallChmFrameHandlers()
+{
+	if (m_chmFrameHandlersInstalled)
+		return;
+	m_chmFrameHandlersInstalled = true;
+
+	EventRegistrationToken token;
+	mWebView->add_FrameNavigationStarting(
+		Microsoft::WRL::Callback<ICoreWebView2NavigationStartingEventHandler>(
+			[this](ICoreWebView2*, ICoreWebView2NavigationStartingEventArgs* args) -> HRESULT {
+				wil::unique_cotaskmem_string uri;
+				UINT64 id = 0;
+				if (SUCCEEDED(args->get_Uri(&uri)) && uri && SUCCEEDED(args->get_NavigationId(&id)))
+				{
+					m_chmFrameNavId = id;
+					m_chmFrameUri = uri.get();
+				}
+				return S_OK;
+			})
+			.Get(),
+		&token);
+
+	mWebView->add_FrameNavigationCompleted(
+		Microsoft::WRL::Callback<ICoreWebView2NavigationCompletedEventHandler>(
+			[this](ICoreWebView2* sender, ICoreWebView2NavigationCompletedEventArgs* args) -> HRESULT {
+				wil::unique_cotaskmem_string source;
+				sender->get_Source(&source);
+				if (!source || !IsChmUri(source.get()))
+					return S_OK;
+
+				BOOL success = TRUE;
+				args->get_IsSuccess(&success);
+				if (success)
+				{
+					mWebView->ExecuteScript(L"window.__evChmFrameOk && window.__evChmFrameOk();", nullptr);
+					return S_OK;
+				}
+				COREWEBVIEW2_WEB_ERROR_STATUS status = COREWEBVIEW2_WEB_ERROR_STATUS_UNKNOWN;
+				args->get_WebErrorStatus(&status);
+				if (status == COREWEBVIEW2_WEB_ERROR_STATUS_OPERATION_CANCELED)
+					return S_OK;
+
+				UINT64 id = 0;
+				args->get_NavigationId(&id);
+				const std::wstring uri = (id == m_chmFrameNavId) ? m_chmFrameUri : std::wstring();
+
+				// [WebView] OfflineMode answers external requests with 403.
+				const bool blocked = !uri.empty() && !IsLocalUri(uri) &&
+				                     to_int(GlobalSettings()["WebView"]["OfflineMode"]) != 0;
+				const wchar_t* reason = L"error";
+				if (blocked)
+					reason = L"blocked";
+				else if (status == COREWEBVIEW2_WEB_ERROR_STATUS_DISCONNECTED ||
+				         status == COREWEBVIEW2_WEB_ERROR_STATUS_HOST_NAME_NOT_RESOLVED ||
+				         status == COREWEBVIEW2_WEB_ERROR_STATUS_CANNOT_CONNECT ||
+				         status == COREWEBVIEW2_WEB_ERROR_STATUS_SERVER_UNREACHABLE ||
+				         status == COREWEBVIEW2_WEB_ERROR_STATUS_TIMEOUT ||
+				         status == COREWEBVIEW2_WEB_ERROR_STATUS_CONNECTION_ABORTED ||
+				         status == COREWEBVIEW2_WEB_ERROR_STATUS_CONNECTION_RESET)
+					reason = L"offline";
+				mWebView->ExecuteScript(std::format(L"window.__evChmFrameFailed && window.__evChmFrameFailed({}, {});",
+				                                    ChmJsString(uri), ChmJsString(reason)).c_str(), nullptr);
+				return S_OK;
+			})
+			.Get(),
+		&token);
+}
+//------------------------------------------------------------------------
+// evh://chm.example/?evchm=<id> -> the loader, evh://chm.example/<entry> ->
+// the entry; anything else -> false (404).
+bool WebView2Backend::BuildChmResponse(const std::wstring& uri, ICoreWebView2Environment* environment,
+                                       ICoreWebView2WebResourceResponse** outResponse)
+{
+	std::wstring escapedPath, query;
+	if (!ParseChmUri(uri, escapedPath, query))
+		return false;
+
+	std::shared_ptr<ChmArchive> archive;
+	std::vector<uint8_t> bytes;
+	std::wstring mime;
+	std::string charsetOverride;
+	{
+		std::lock_guard lock(m_chmMutex);
+		if (!m_chm)
+			return false;
+		archive = m_chm;
+		charsetOverride = m_chmCharsetOverride;
+		if (escapedPath.empty())
+		{
+			if (query != L"evchm=" + m_chmId)
+				return false;
+			bytes.assign(m_chmLoaderUtf8.begin(), m_chmLoaderUtf8.end());
+			mime = L"text/html; charset=utf-8";
+		}
+	}
+
+	if (mime.empty())
+	{
+		std::wstring rel;
+		if (!UrlDecodeInto(rel, escapedPath) || !archive->Read("/" + to_utf8(rel), bytes))
+			return false;
+		const std::filesystem::path relPath(rel);
+		std::wstring ext = relPath.extension().wstring();
+		for (auto& c : ext)
+			c = static_cast<wchar_t>(std::towlower(c));
+		mime = (ext == L".hhc" || ext == L".hhk") ? L"text/plain" : MimeForPath(relPath);
+		if (mime == L"text/html" || mime == L"text/plain")
+		{
+			const std::string charset = !charsetOverride.empty() ? charsetOverride
+				: ChmPageCharset(bytes, archive->CodePageLabel());
+			if (!charset.empty())
+				mime += L"; charset=" + to_utf16(charset);
+		}
+	}
+
+	wil::com_ptr<IStream> stream;
+	CreateStreamOnHGlobal(nullptr, TRUE, &stream);
+	stream->Write(bytes.data(), static_cast<ULONG>(bytes.size()), nullptr);
+	LARGE_INTEGER zero{};
+	stream->Seek(zero, STREAM_SEEK_SET, nullptr);
+
+	// no-cache: a page reloaded after an Encoding pick is served again.
+	const std::wstring headers = L"Content-Type: " + mime + L"\r\nCache-Control: no-cache\r\n";
 	environment->CreateWebResourceResponse(stream.get(), 200, L"OK", headers.c_str(), outResponse);
 	return true;
 }
@@ -432,6 +577,22 @@ void WebView2Backend::ApplyCharsetOverride(const std::wstring& tag)
 		m_userPicked = true;
 		m_autoApplied = false;
 		m_autoSuggestedTag.clear();
+	}
+
+	// CHM view: the pick goes into the Content-Type of the help pages
+	// (BuildChmResponse) until another file is opened; "" = automatic.
+	{
+		wil::unique_cotaskmem_string source;
+		if (mWebView && SUCCEEDED(mWebView->get_Source(&source)) && source && IsChmUri(source.get()))
+		{
+			{
+				std::lock_guard lock(m_chmMutex);
+				m_chmCharsetOverride = to_utf8(tag);
+			}
+			m_activeEncodingTag = tag;
+			ExecuteScript(L"window.__evChmReloadTopic && window.__evChmReloadTopic();");
+			return;
+		}
 	}
 
 	// MHT views re-decode PAGE-SIDE: the mhtml loader owns
