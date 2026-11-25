@@ -7,11 +7,13 @@
 #include "EncodingList.h"
 #include "UrlLauncher.h"
 #include "Processors/ProcessorInterface.h"
+#include "ChmArchive.h"
 
 #include <windows.h>
 #include <webview2.h>
 
 #include <format>
+#include <string_view>
 #include <webview2environmentoptions.h>
 #include <wrl.h>
 #include <wil/com.h>
@@ -202,6 +204,20 @@ void AddNativeContextMenu(const wil::com_ptr<ICoreWebView2>& webview, HWND hWnd)
 				encodingSupported = it->second->SupportsEncodingOverride();
 			}
 
+			// A CHM page exists only in this view: no "Open link in new window".
+			if (IsChmUri(linkUri))
+			{
+				for (UINT32 i = count; i-- > 0;)
+				{
+					wil::com_ptr<ICoreWebView2ContextMenuItem> item;
+					wil::unique_cotaskmem_string name;
+					if (SUCCEEDED(items->GetValueAtIndex(i, &item)) && item &&
+					    SUCCEEDED(item->get_Name(&name)) && name && std::wstring_view(name.get()) == L"openLinkInNewWindow")
+						items->RemoveValueAtIndex(i);
+				}
+				items->get_Count(&count);
+			}
+
 			// "Send link to VirusTotal": only for scannable web links, on
 			// every processor view. Launches the default browser; the view
 			// itself never navigates.
@@ -286,7 +302,7 @@ void AddNativeContextMenu(const wil::com_ptr<ICoreWebView2>& webview, HWND hWnd)
 			return S_OK;
 		}).Get(), &token);
 }
-bool ZoomHotkeyHandled(ICoreWebView2Controller* ctrl, UINT key)
+bool ZoomHotkeyHandled(ICoreWebView2Controller* ctrl, UINT key, const ProcessorInterface* processor)
 {
 	bool ctrlHeld = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
 	double currentZoom;
@@ -295,13 +311,57 @@ bool ZoomHotkeyHandled(ICoreWebView2Controller* ctrl, UINT key)
 	if (::ZoomHotkeyHandled(key, ctrlHeld, currentZoom, newZoom))
 	{
 		if (newZoom != currentZoom)
+		{
 			ctrl->put_ZoomFactor(newZoom);
+			// put_ZoomFactor raises no ZoomFactorChanged: store it for KeepZoom.
+			double applied = newZoom;
+			ctrl->get_ZoomFactor(&applied);
+			gs_ZoomFactor[processor] = applied;
+		}
 		return true;
 	}
 	return false;
 }
 
-void AddAccleratorKeyHandler(ICoreWebView2Controller* controller, HWND hWnd)
+// target="_blank" and window.open(): a web address opens in the default
+// browser. A WebView2 popup window would leave the view without key presses
+// (1..8, Tab) after it is closed. A CHM page opens in the CHM view's frame.
+void InstallNewWindowHandler(const wil::com_ptr<ICoreWebView2>& webview)
+{
+	EventRegistrationToken token;
+	webview->add_NewWindowRequested(Callback<ICoreWebView2NewWindowRequestedEventHandler>(
+		[](ICoreWebView2* sender, ICoreWebView2NewWindowRequestedEventArgs* args) -> HRESULT
+		{
+			wil::unique_cotaskmem_string uri;
+			if (FAILED(args->get_Uri(&uri)) || !uri)
+				return S_OK;
+			if (IsChmUri(uri.get()))
+			{
+				args->put_Handled(TRUE);
+				sender->ExecuteScript((L"window.__evChmOpenInFrame && window.__evChmOpenInFrame(" +
+				                       ChmJsString(uri.get()) + L");").c_str(), nullptr);
+				return S_OK;
+			}
+			if (!IsScannableWebLink(uri.get()))
+				return S_OK;
+			args->put_Handled(TRUE);
+			OpenInDefaultBrowser(uri.get());
+			return S_OK;
+		}).Get(), &token);
+}
+
+// The view's WebView2 while it shows a CHM, else null.
+wil::com_ptr<ICoreWebView2> ChmView(ICoreWebView2Controller* controller)
+{
+	wil::com_ptr<ICoreWebView2> wv;
+	wil::unique_cotaskmem_string source;
+	if (SUCCEEDED(controller->get_CoreWebView2(&wv)) && wv && SUCCEEDED(wv->get_Source(&source)) && source &&
+	    IsChmUri(source.get()))
+		return wv;
+	return nullptr;
+}
+
+void AddAccleratorKeyHandler(ICoreWebView2Controller* controller, HWND hWnd, const ProcessorInterface* processor)
 {
 	EventRegistrationToken token;
 	controller->add_AcceleratorKeyPressed(Callback<ICoreWebView2AcceleratorKeyPressedEventHandler>(
@@ -309,6 +369,26 @@ void AddAccleratorKeyHandler(ICoreWebView2Controller* controller, HWND hWnd)
 		{
 			COREWEBVIEW2_KEY_EVENT_KIND kind;
 			args->get_KeyEventKind(&kind);
+			const bool ctrlDown = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+			const bool altDown = (GetKeyState(VK_MENU) & 0x8000) != 0;
+			const bool shiftDown = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+			// CHM view: Alt+T shows / hides the contents, Alt+F goes to the
+			// filter field (Alt+Shift+letter stays with Lister).
+			if (kind == COREWEBVIEW2_KEY_EVENT_KIND_SYSTEM_KEY_DOWN)
+			{
+				UINT key = 0;
+				args->get_VirtualKey(&key);
+				if ((key == 'T' || key == 'F') && altDown && !ctrlDown && !shiftDown)
+				{
+					if (auto wv = ChmView(sender))
+					{
+						args->put_Handled(TRUE);
+						wv->ExecuteScript(key == 'T' ? L"window.__evChmToggleToc && window.__evChmToggleToc();"
+						                             : L"window.__evChmFocusFilter && window.__evChmFocusFilter();", nullptr);
+					}
+				}
+				return S_OK;
+			}
 			if (kind == COREWEBVIEW2_KEY_EVENT_KIND_KEY_DOWN)
 			{
 				UINT key;
@@ -320,7 +400,36 @@ void AddAccleratorKeyHandler(ICoreWebView2Controller* controller, HWND hWnd)
 				// put_Handled branch would be dead code. Quick-view Tab
 				// forwarding is done page-side in the document keydown
 				// bridge below (window.__evTabForward + CMD_TAB).
-				if (ZoomHotkeyHandled(controller, key))
+				// CHM view: Esc clears the filter field if the page says so
+				// (__evChmEscape() == true), else goes to Total Commander.
+				if (key == VK_ESCAPE && !ctrlDown && !altDown && !shiftDown)
+				{
+					if (auto wv = ChmView(sender))
+					{
+						args->put_Handled(TRUE);
+						wv->ExecuteScript(L"window.__evChmEscape ? window.__evChmEscape() : false;",
+							Callback<ICoreWebView2ExecuteScriptCompletedHandler>(
+								[hWnd](HRESULT hr, LPCWSTR json) -> HRESULT
+								{
+									if (FAILED(hr) || !json || std::wstring_view(json) != L"true")
+										PostMessage(hWnd, WM_WEBVIEW_KEYDOWN, VK_ESCAPE, 0);
+									return S_OK;
+								}).Get());
+						return S_OK;
+					}
+				}
+				// CHM view: Ctrl+Tab and F6 (also with Shift) switch between the
+				// contents and the help page (F6 must not reach Total Commander).
+				if ((key == VK_TAB && ctrlDown && !altDown) || (key == VK_F6 && !ctrlDown && !altDown))
+				{
+					if (auto wv = ChmView(sender))
+					{
+						args->put_Handled(TRUE);
+						wv->ExecuteScript(L"window.__evChmSwitchPane && window.__evChmSwitchPane();", nullptr);
+						return S_OK;
+					}
+				}
+				if (ZoomHotkeyHandled(controller, key, processor))
 					;
 				else
 					PostMessage(hWnd, WM_WEBVIEW_KEYDOWN, key, 0);
@@ -542,7 +651,8 @@ HRESULT QueueConfigureWebView2(HWND hWnd, const std::wstring& fileToLoad, const 
 							DisableBrowserHotkeys(webview);
 							SetColorProfile(webview);
 							InstallOfflineMode(webview);
-							AddAccleratorKeyHandler(controller, hWnd);
+							InstallNewWindowHandler(webview);
+							AddAccleratorKeyHandler(controller, hWnd, processor);
 
 							EventRegistrationToken token;
 							webview->add_WebMessageReceived(Callback<ICoreWebView2WebMessageReceivedEventHandler>(
@@ -553,6 +663,40 @@ HRESULT QueueConfigureWebView2(HWND hWnd, const std::wstring& fileToLoad, const 
 									ParseAndPostMessage(controller, webview, hWnd, message);
 									return S_OK;
 								}).Get(), &token);
+
+							// Keys from frames (the CHM view's help page): postMessage in a
+							// frame raises the frame's WebMessageReceived. Only CMD_KEY and
+							// CMD_TAB, only from plugin-local pages.
+							if (auto wv4 = webview.try_query<ICoreWebView2_4>())
+							{
+								ICoreWebView2* wvRaw = webview.get();
+								wv4->add_FrameCreated(Callback<ICoreWebView2FrameCreatedEventHandler>(
+									[=](ICoreWebView2*, ICoreWebView2FrameCreatedEventArgs* args) -> HRESULT
+									{
+										wil::com_ptr<ICoreWebView2Frame> frame;
+										if (FAILED(args->get_Frame(&frame)) || !frame)
+											return S_OK;
+										auto frame2 = frame.try_query<ICoreWebView2Frame2>();
+										if (!frame2)
+											return S_OK;
+										EventRegistrationToken frameToken;
+										frame2->add_WebMessageReceived(Callback<ICoreWebView2FrameWebMessageReceivedEventHandler>(
+											[=](ICoreWebView2Frame*, ICoreWebView2WebMessageReceivedEventArgs* margs) -> HRESULT
+											{
+												wil::unique_cotaskmem_string source;
+												if (FAILED(margs->get_Source(&source)) || !source || !IsLocalUri(source.get()))
+													return S_OK;
+												wil::unique_cotaskmem_string message;
+												if (FAILED(margs->TryGetWebMessageAsString(&message)) || !message)
+													return S_OK;
+												const std::wstring_view m(message.get());
+												if (m.starts_with(L"CMD_KEY|") || m.starts_with(L"CMD_TAB|"))
+													ParseAndPostMessage(controller, wvRaw, hWnd, message);
+												return S_OK;
+											}).Get(), &frameToken);
+										return S_OK;
+									}).Get(), &token);
+							}
 
 							// Quick-view Tab policy (quick-view-tab-forward): bake the
 							// per-view forwarding flag into every document. The bridge

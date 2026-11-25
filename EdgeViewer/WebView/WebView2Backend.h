@@ -44,6 +44,8 @@ public:
 	// Not part of the IWebView contract.
 	wil::com_ptr<ICoreWebView2Controller> GetController() const { return mController; }
 	wil::com_ptr<ICoreWebView2> GetWebView() const { return mWebView; }
+	void RegisterChmArchive(const std::wstring& id, std::shared_ptr<ChmArchive> archive,
+	                        const std::wstring& loaderHtml) override;
 
 private:
 	// Installs the evh:// WebResourceRequested handler that serves a
@@ -58,6 +60,18 @@ private:
 	// WebResourceRequested callback thread).
 	std::mutex m_hostFoldersMutex;
 	std::map<std::wstring, std::filesystem::path> m_hostFolders;
+	// CHM view (ChmProcessor): the loader page and the archive entries.
+	bool BuildChmResponse(const std::wstring& uri, ICoreWebView2Environment* environment,
+	                      ICoreWebView2WebResourceResponse** outResponse);
+	void InstallChmFrameHandlers();
+	bool m_chmFrameHandlersInstalled = false;
+	UINT64 m_chmFrameNavId = 0;
+	std::wstring m_chmFrameUri;
+	std::mutex m_chmMutex;
+	std::wstring m_chmId;
+	std::shared_ptr<ChmArchive> m_chm;
+	std::string m_chmLoaderUtf8;
+	std::string m_chmCharsetOverride; // Encoding menu, "" = automatic
 	bool m_forcedHtmlHandlerInstalled = false;
 	EventRegistrationToken m_forcedHtmlToken{};
 

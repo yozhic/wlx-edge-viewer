@@ -28,7 +28,9 @@
     <ClCompile Include="WebPolicy.cpp" />
     <ClCompile Include="WlxDetect.cpp" />
     <ClCompile Include="ZoomHotkey.cpp" />
+    <ClCompile Include="ChmArchive.cpp" />
     <ClCompile Include="Processors\AdocProcessor.cpp" />
+    <ClCompile Include="Processors\ChmProcessor.cpp" />
     <ClCompile Include="Processors\BaseFileProcessor.cpp" />
     <ClCompile Include="Processors\DirProcessor.cpp" />
     <ClCompile Include="Processors\DirProcessor_Win.cpp" />
@@ -45,9 +47,26 @@
     <ClCompile Include="WebView\WebView2Backend.cpp" />
     <ClCompile Include="WebView\WebViewFactory.cpp" />
     <ClCompile Include="UrlLauncher_Win.cpp" />
+    <ClCompile Include="third_party\libmspack\mspack\chmd.c">
+      <AdditionalIncludeDirectories>$(ProjectDir)third_party\libmspack\mspack;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;_CRT_NONSTDC_NO_DEPRECATE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <WarningLevel>Level1</WarningLevel>
+    </ClCompile>
+    <ClCompile Include="third_party\libmspack\mspack\lzxd.c">
+      <AdditionalIncludeDirectories>$(ProjectDir)third_party\libmspack\mspack;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;_CRT_NONSTDC_NO_DEPRECATE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <WarningLevel>Level1</WarningLevel>
+    </ClCompile>
+    <ClCompile Include="third_party\libmspack\mspack\system.c">
+      <AdditionalIncludeDirectories>$(ProjectDir)third_party\libmspack\mspack;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>_CRT_SECURE_NO_WARNINGS;_CRT_NONSTDC_NO_DEPRECATE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+      <WarningLevel>Level1</WarningLevel>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="IWebView.h" />
+    <ClInclude Include="ChmArchive.h" />
+    <ClInclude Include="Processors\ChmProcessor.h" />
     <ClInclude Include="Processors\AdocProcessor.h" />
     <ClInclude Include="Globals.h" />
     <ClInclude Include="CharsetOverride.h" />

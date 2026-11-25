@@ -2,8 +2,11 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <memory>
 #include <string>
 #include <vector>
+
+class ChmArchive;
 
 //------------------------------------------------------------------------
 // Shared, platform-agnostic web view interface. The concrete backend
@@ -21,6 +24,11 @@ public:
 	virtual void AddScriptToExecuteOnDocumentCreated(const std::wstring& js) = 0;
 	virtual void RegisterVirtualHost(const std::wstring& host, const std::filesystem::path& folder) = 0;
 	virtual void Print() { ExecuteScript(L"window.print();"); }
+
+	// CHM view: serve the loader page and the entries of this archive (one
+	// archive per view). Windows only.
+	virtual void RegisterChmArchive(const std::wstring& id, std::shared_ptr<ChmArchive> archive,
+	                                const std::wstring& loaderHtml) {}
 	virtual void Close() = 0;
 
 	// Pre-fetch: inject raw file bytes (base64-encoded) into the page

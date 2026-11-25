@@ -10,7 +10,7 @@ std::string BuildDetectString(const mINI::INIStructure& ini)
 	// convert ext1,ext2,ext3 into EXT="ext1"|EXT="ext2"|EXT="ext3"
 
 	// NOTE(mm): all type sections should be listed here!
-	static const std::vector<std::string> secs = { "HTML", "Markdown", "AsciiDoc", "URL", "MHTML", "EML", "RST", "Images", "Other" };
+	static const std::vector<std::string> secs = { "HTML", "Markdown", "AsciiDoc", "URL", "MHTML", "CHM", "EML", "RST", "Images", "Other" };
 
 	const auto& extIni = ini.get("Extensions");
 	auto exts = "EXT=\"" + extIni.get(secs[0]);
