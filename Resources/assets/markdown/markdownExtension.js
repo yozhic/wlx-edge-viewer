@@ -78,6 +78,19 @@ function slugify(text) {
     .replace(/^-+|-+$/g, '');
 }
 
+// Mermaid 12 changed the defaults: ELK layout, the neo look, redux-color theme,
+// and narrower flowchart/state nodes (minNodeWidth 120, wrappingWidth 120).
+// Pin the values that keep diagrams looking as they did in Mermaid 11.
+function mermaidConfig() {
+  return {
+    startOnLoad: false,
+    layout: 'dagre',
+    look: 'classic',
+    theme: window.__MD_DARK__ ? 'dark' : 'default',
+    flowchart: { minNodeWidth: 0, wrappingWidth: 200 },
+    state: { minNodeWidth: 0, wrappingWidth: 200 }
+  };
+}
 const customRenderer = {
   heading({ tokens, depth, raw }) {
     const id = slugify(raw);
@@ -122,7 +135,7 @@ function _mdNavigate(href) {
     window.scrollTo(0, 0);
 
     try { MathJax.typeset(); } catch(err) {}
-    try { mermaid.initialize({ startOnLoad: false, theme: window.__MD_DARK__ ? 'dark' : 'default' }); await mermaid.run(); } catch(err) {}
+    try { mermaid.initialize(mermaidConfig()); await mermaid.run(); } catch(err) {}
     try { hljs.highlightAll(); } catch(err) {}
 
     const hash = url.hash;
